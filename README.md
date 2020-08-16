@@ -1,96 +1,114 @@
-![](docs/logo_with_text.png)
+- # Talent plan weak1
 
-[![LICENSE](https://img.shields.io/github/license/pingcap/tidb.svg)](https://github.com/pingcap/tidb/blob/master/LICENSE)
-[![Language](https://img.shields.io/badge/Language-Go-blue.svg)](https://golang.org/)
-[![Build Status](https://travis-ci.org/pingcap/tidb.svg?branch=master)](https://travis-ci.org/pingcap/tidb)
-[![Go Report Card](https://goreportcard.com/badge/github.com/pingcap/tidb)](https://goreportcard.com/report/github.com/pingcap/tidb)
-[![GitHub release](https://img.shields.io/github/tag/pingcap/tidb.svg?label=release)](https://github.com/pingcap/tidb/releases)
-[![GitHub release date](https://img.shields.io/github/release-date/pingcap/tidb.svg)](https://github.com/pingcap/tidb/releases)
-[![CircleCI Status](https://circleci.com/gh/pingcap/tidb.svg?style=shield)](https://circleci.com/gh/pingcap/tidb)
-[![Coverage Status](https://codecov.io/gh/pingcap/tidb/branch/master/graph/badge.svg)](https://codecov.io/gh/pingcap/tidb)
-[![GoDoc](https://img.shields.io/badge/Godoc-reference-blue.svg)](https://godoc.org/github.com/pingcap/tidb)
+  ## 1 下载源码
 
-- [**Slack Channel**](https://pingcap.com/tidbslack/)
-- **Twitter**: [@PingCAP](https://twitter.com/PingCAP)
-- [**Reddit**](https://www.reddit.com/r/TiDB/)
-- **Mailing list**: [Google Group](https://groups.google.com/forum/#!forum/tidb-user)
-- [**Blog**](https://www.pingcap.com/blog/)
-- [**For support, please contact PingCAP**](http://bit.ly/contact_us_via_github)
+  ```shell
+  cd $GOPATH/src/github.com/pingcap
+  git clone https://github.com/pingcap/tidb
+  gmake #编译源码
+  ```
 
-## What is TiDB?
+  ## 2 改写代码
 
-TiDB ("Ti" stands for Titanium) is an open-source NewSQL database that supports Hybrid Transactional and Analytical Processing (HTAP) workloads. It is MySQL compatible and features horizontal scalability, strong consistency, and high availability.
+  > https://pingcap.com/blog-cn/tidb-source-code-reading-2/#kv-api-layer
 
-- __Horizontal Scalability__
+  通过这一篇文章我们可以找到  `tidb/kv/kv.go` 这个文件，它定义的 `Transaction` 接口描述了 TiDB 对于事务的基本操作
 
-    TiDB expands both SQL processing and storage by simply adding new nodes. This makes infrastructure capacity planning both easier and more cost-effective than traditional relational databases which only scale vertically.
+  ```go
+  // Transaction defines the interface for operations inside a Transaction.
+  // This is not thread safe.
+  type Transaction interface {
+  	...
+  	// Commit commits the transaction operations to KV store.
+  	Commit(context.Context) error
+  	...
+  }
+  ```
 
-- __MySQL Compatible Syntax__
+  我们的任务是使得 TiDB 启动事务时能打印出一个 “hello transaction” 的日志，所以可以简单的认为，`Transaction` 每进行一次 `Commit` 就会有一次事务发生。所以顺藤摸瓜，找到了接口的实现`store/tikv/txn.go`
 
-    TiDB acts like it is a MySQL 5.7 server to your applications. You can continue to use all of the existing MySQL client libraries, and in many cases, you will not need to change a single line of code in your application. Because TiDB is built from scratch, not a MySQL fork, please check out the list of [known compatibility differences](https://pingcap.com/docs/v3.0/reference/mysql-compatibility/).
+  ```go
+  func (txn *tikvTxn) Commit(ctx context.Context) error {
+  	// logutil.BgLogger().Info("[test] hello transaction")
+  	if span := opentracing.SpanFromContext(ctx); span != nil && span.Tracer() != nil {
+  		span1 := span.Tracer().StartSpan("tikvTxn.Commit", opentracing.ChildOf(span.Context()))
+  		defer span1.Finish()
+  		ctx = opentracing.ContextWithSpan(ctx, span1)
+  	}
+  
+  	if !txn.valid {
+  		return kv.ErrInvalidTxn
+  	}
+  	defer txn.close()
+      ...
+  }
+  ```
 
-- __Distributed Transactions with Strong Consistency__
+  然后在函数开始执行的时候加入日志打印
 
-    TiDB internally shards table into small range-based chunks that we refer to as "regions". Each region defaults to approximately 100MiB in size, and TiDB uses a Two-phase commit internally to ensure that regions are maintained in a transactionally consistent way.
+  ## 3 编译部署
 
-- __Cloud Native__
+  首先我们使用 `make` 直接在代码目录下进行编译
 
-    TiDB is designed to work in the cloud -- public, private, or hybrid -- making deployment, provisioning, operations, and maintenance simple.
+  ```shell
+  smilencer@smilencer-OptiPlex-7040 ~/Code/golang/src/github.com/pingcap/tidb (weak1) $ make
+  CGO_ENABLED=1 GO111MODULE=on go build  -tags codes  -ldflags '-X "github.com/pingcap/parser/mysql.TiDBReleaseVersion=v4.0.0-beta.2-962-g738f677ee" -X "github.com/pingcap/tidb/util/versioninfo.TiDBBuildTS=2020-08-16 10:42:11" -X "github.com/pingcap/tidb/util/versioninfo.TiDBGitHash=738f677eee4c82e45aee3899b1be7b653bfaa759" -X "github.com/pingcap/tidb/util/versioninfo.TiDBGitBranch=weak1" -X "github.com/pingcap/tidb/util/versioninfo.TiDBEdition=Community" ' -o bin/tidb-server tidb-server/main.go
+  Build TiDB Server successfully!
+  ```
 
-    The storage layer of TiDB, called TiKV, [became](https://www.cncf.io/blog/2018/08/28/cncf-to-host-tikv-in-the-sandbox/) a [Cloud Native Computing Foundation](https://www.cncf.io/) member project in 2018. The architecture of the TiDB platform also allows SQL processing and storage to be scaled independently of each other in a very cloud-friendly manner.
+  然后我们使用 TiUP 进行临时二进制包部署
 
-- __Minimize ETL__
+  > [https://docs.pingcap.com/zh/tidb/dev/tiup-playground#%E6%9B%BF%E6%8D%A2%E9%BB%98%E8%AE%A4%E7%9A%84%E4%BA%8C%E8%BF%9B%E5%88%B6%E6%96%87%E4%BB%B6](https://docs.pingcap.com/zh/tidb/dev/tiup-playground#替换默认的二进制文件)
 
-    TiDB is designed to support both transaction processing (OLTP) and analytical processing (OLAP) workloads. This means that while you may have traditionally transacted on MySQL and then Extracted, Transformed and Loaded (ETL) data into a column store for analytical processing, this step is no longer required.
+  ```shell
+  tiup playground --db.binpath /xx/tidb-server
+  Starting component `playground`: /home/smilencer/.tiup/components/playground/v1.0.9/tiup-playground --db.binpath /home/smilencer/Code/golang/src/github.com/pingcap/tidb/bin/tidb-server
+  Use the latest stable version: v4.0.4
+  
+      Specify version manually:   tiup playground <version>
+      The stable version:         tiup playground v4.0.0
+      The nightly version:        tiup playground nightly
+  
+  Playground Bootstrapping...
+  Start pd instance...
+  Start tikv instance...
+  Start tidb instance...
+  .................................................
+  Waiting for tikv 127.0.0.1:41187 ready 
+  Start tiflash instance...
+  Waiting for tiflash 127.0.0.1:3930 ready ...........................................
+  CLUSTER START SUCCESSFULLY, Enjoy it ^-^
+  To connect TiDB: mysql --host 127.0.0.1 --port 4000 -u root
+  To view the dashboard: http://127.0.0.1:46263/dashboard
+  To view the Prometheus: http://127.0.0.1:36189
+  To view the Grafana: http://127.0.0.1:3000
+  ```
 
-- __High Availability__
+  ## 4 运行结果
 
-    TiDB uses the Raft consensus algorithm to ensure that data is highly available and safely replicated throughout storage in Raft groups. In the event of failure, a Raft group will automatically elect a new leader for the failed member, and self-heal the TiDB cluster without any required manual intervention. Failure and self-healing operations are also transparent to applications.
+  新开启一个 session 以访问 TiDB 数据库
 
-For more details and latest updates, see [official TiDB blog](https://www.pingcap.com/blog/).
+  ```SHELL
+  mysql --host 127.0.0.1 --port 4000 -u root
+  ```
 
+  尝试使用开启事务的语句
 
-## Quick start
+  > [https://docs.pingcap.com/zh/tidb/dev/transaction-overview#%E5%B8%B8%E7%94%A8%E4%BA%8B%E5%8A%A1%E8%AF%AD%E5%8F%A5](https://docs.pingcap.com/zh/tidb/dev/transaction-overview#常用事务语句)
 
+  ```sql
+  mysql> BEGIN;
+  Query OK, 0 rows affected (0.00 sec)
+  
+  mysql> START TRANSACTION;
+  Query OK, 0 rows affected (0.00 sec)
+  
+  mysql> START TRANSACTION WITH CONSISTENT SNAPSHOT;
+  Query OK, 0 rows affected (0.00 sec)
+  ```
 
-See [Quick Start Guide](https://pingcap.com/docs/stable/quick-start-with-tidb/ ), which includes deployment methods using TiUP, Ansible, Docker, and Kubernetes.
+  在 http://127.0.0.1:46263/dashboard/ 中寻找日志
 
-### To start developing TiDB
+  
 
-The [community repository](https://github.com/pingcap/community) hosts all information about the TiDB community, including how to contribute to TiDB, how TiDB community is governed,  how special interest groups are organized, etc.
-
-[<img src="docs/contribution-map.png" alt="contribution-map" width="180">](https://github.com/pingcap/tidb-map/blob/master/maps/contribution-map.md#tidb-is-an-open-source-distributed-htap-database-compatible-with-the-mysql-protocol)
-
-Contributions are welcomed and greatly appreciated. See
-[CONTRIBUTING.md](https://github.com/pingcap/community/blob/master/CONTRIBUTING.md)
-for details on submitting patches and the contribution workflow. For more contributing information, click on the contributor icon above.
-
-## Adopters
-
-View the current list of in-production TiDB adopters [here](https://pingcap.com/docs/adopters/).
-
-## Roadmap
-
-Read the [Roadmap](https://pingcap.com/docs/ROADMAP).
-
-
-## Getting Help
-
-- [**Stack Overflow**](https://stackoverflow.com/questions/tagged/tidb)
-- [**User Group (Chinese)**](https://asktug.com)
-
-## Documentation
-
-+ [English](https://pingcap.com/docs)
-+ [简体中文](https://pingcap.com/docs-cn)
-
-## Architecture
-
-![architecture](./docs/architecture.png)
-
-## License
-TiDB is under the Apache 2.0 license. See the [LICENSE](./LICENSE) file for details.
-
-## Acknowledgments
-- Thanks [cznic](https://github.com/cznic) for providing some great open source tools.
-- Thanks [GolevelDB](https://github.com/syndtr/goleveldb), [BoltDB](https://github.com/boltdb/bolt), and [RocksDB](https://github.com/facebook/rocksdb) for their powerful storage engines.
+  
