@@ -25,26 +25,27 @@
   }
   ```
 
-  我们的任务是使得 TiDB 启动事务时能打印出一个 “hello transaction” 的日志，所以可以简单的认为，`Transaction` 每进行一次 `Commit` 就会有一次事务发生。所以顺藤摸瓜，找到了接口的实现`store/tikv/txn.go`
+  然后顺藤摸瓜，我们找到了其同文件夹下的 `kv/txn.go`，通过名字我们大致推测出他跟事务操作有关。
 
   ```go
-  func (txn *tikvTxn) Commit(ctx context.Context) error {
-  	// logutil.BgLogger().Info("[test] hello transaction")
-  	if span := opentracing.SpanFromContext(ctx); span != nil && span.Tracer() != nil {
-  		span1 := span.Tracer().StartSpan("tikvTxn.Commit", opentracing.ChildOf(span.Context()))
-  		defer span1.Finish()
-  		ctx = opentracing.ContextWithSpan(ctx, span1)
-  	}
-  
-  	if !txn.valid {
-  		return kv.ErrInvalidTxn
-  	}
-  	defer txn.close()
-      ...
-  }
+  // RunInNewTxn will run the f in a new transaction environment.
+  func RunInNewTxn(store Storage, retryable bool, f func(txn Transaction) error) error {
+  	var (
+  		err           error
+  		originalTxnTS uint64
+  		txn           Transaction
+  	)
+      // hello transaction
+  	logutil.BgLogger().Info("[test] hello transaction")
+  	for i := uint(0); i < maxRetryCnt; i++ {
+  		txn, err = store.Begin()
+  		if err != nil {
+  			logutil.BgLogger().Error("RunInNewTxn", zap.Error(err))
+  			return err
+  		}
   ```
 
-  然后在函数开始执行的时候加入日志打印
+  然后找到了 `RunInNewTxn` 这个函数 ，在函数开始执行的时候加入日志打印结果
 
   ## 3 编译部署
 
@@ -56,13 +57,13 @@
   Build TiDB Server successfully!
   ```
 
-  然后我们使用 TiUP 进行临时二进制包部署
+  然后我们使用 TiUP 进行临时二进制包部署，根据课程要求设为 `--db 1 --pd 1 --kv 3`
 
   > [https://docs.pingcap.com/zh/tidb/dev/tiup-playground#%E6%9B%BF%E6%8D%A2%E9%BB%98%E8%AE%A4%E7%9A%84%E4%BA%8C%E8%BF%9B%E5%88%B6%E6%96%87%E4%BB%B6](https://docs.pingcap.com/zh/tidb/dev/tiup-playground#替换默认的二进制文件)
 
   ```shell
-  tiup playground --db.binpath /xx/tidb-server
-  Starting component `playground`: /home/smilencer/.tiup/components/playground/v1.0.9/tiup-playground --db.binpath /home/smilencer/Code/golang/src/github.com/pingcap/tidb/bin/tidb-server
+  smilencer@smilencer-OptiPlex-7040 ~ $ tiup playground --db.binpath  /home/smilencer/Code/golang/src/github.com/pingcap/tidb/bin/tidb-server --db 1 --pd 1 --kv 3 --monitor
+  Starting component `playground`: /home/smilencer/.tiup/components/playground/v1.0.9/tiup-playground --db.binpath /home/smilencer/Code/golang/src/github.com/pingcap/tidb/bin/tidb-server --db 1 --pd 1 --kv 3 --monitor
   Use the latest stable version: v4.0.4
   
       Specify version manually:   tiup playground <version>
@@ -72,15 +73,11 @@
   Playground Bootstrapping...
   Start pd instance...
   Start tikv instance...
+  Start tikv instance...
+  Start tikv instance...
   Start tidb instance...
-  .................................................
-  Waiting for tikv 127.0.0.1:41187 ready 
-  Start tiflash instance...
-  Waiting for tiflash 127.0.0.1:3930 ready ...........................................
-  CLUSTER START SUCCESSFULLY, Enjoy it ^-^
-  To connect TiDB: mysql --host 127.0.0.1 --port 4000 -u root
-  To view the dashboard: http://127.0.0.1:46263/dashboard
-  To view the Prometheus: http://127.0.0.1:36189
+  ............................................................To view the dashboard: http://127.0.0.1:37207/dashboard
+  To view the Prometheus: http://127.0.0.1:39749
   To view the Grafana: http://127.0.0.1:3000
   ```
 
@@ -97,17 +94,15 @@
   > [https://docs.pingcap.com/zh/tidb/dev/transaction-overview#%E5%B8%B8%E7%94%A8%E4%BA%8B%E5%8A%A1%E8%AF%AD%E5%8F%A5](https://docs.pingcap.com/zh/tidb/dev/transaction-overview#常用事务语句)
 
   ```sql
-  mysql> BEGIN;
-  Query OK, 0 rows affected (0.00 sec)
-  
-  mysql> START TRANSACTION;
-  Query OK, 0 rows affected (0.00 sec)
-  
-  mysql> START TRANSACTION WITH CONSISTENT SNAPSHOT;
-  Query OK, 0 rows affected (0.00 sec)
+  ...
+  begin;
+  insert into test values (1);
+  insert into test values (2);
+  insert into test values (3);
+  commit;
   ```
 
-  在 http://127.0.0.1:46263/dashboard/ 中寻找日志
+  在 http://127.0.0.1:37207/dashboard 中寻找日志
 
   
 
