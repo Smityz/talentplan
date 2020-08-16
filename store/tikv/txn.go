@@ -197,6 +197,7 @@ func (txn *tikvTxn) IsPessimistic() bool {
 }
 
 func (txn *tikvTxn) Commit(ctx context.Context) error {
+	logutil.BgLogger().Info("[test] transaction starts!")
 	if span := opentracing.SpanFromContext(ctx); span != nil && span.Tracer() != nil {
 		span1 := span.Tracer().StartSpan("tikvTxn.Commit", opentracing.ChildOf(span.Context()))
 		defer span1.Finish()
