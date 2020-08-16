@@ -32,6 +32,7 @@ func RunInNewTxn(store Storage, retryable bool, f func(txn Transaction) error) e
 		originalTxnTS uint64
 		txn           Transaction
 	)
+	logutil.BgLogger().Info("[test] hello transaction")
 	for i := uint(0); i < maxRetryCnt; i++ {
 		txn, err = store.Begin()
 		if err != nil {
